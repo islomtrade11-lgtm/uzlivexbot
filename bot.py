@@ -85,11 +85,27 @@ def reply_kb(lang):
 def menu_inline(lang):
     return types.InlineKeyboardMarkup(
         inline_keyboard=[
-            [types.InlineKeyboardButton("🌦 Погода" if lang == "ru" else "🌦 Ob-havo", callback_data="m_weather")],
-            [types.InlineKeyboardButton("🌫 Воздух (AQI)" if lang == "ru" else "🌫 Havo sifati", callback_data="m_aqi")],
-            [types.InlineKeyboardButton("💵 Валюта" if lang == "ru" else "💵 Valyuta", callback_data="m_currency")],
+            [
+                types.InlineKeyboardButton(
+                    text="🌦 Погода" if lang == "ru" else "🌦 Ob-havo",
+                    callback_data="m_weather"
+                )
+            ],
+            [
+                types.InlineKeyboardButton(
+                    text="🌫 Воздух (AQI)" if lang == "ru" else "🌫 Havo sifati",
+                    callback_data="m_aqi"
+                )
+            ],
+            [
+                types.InlineKeyboardButton(
+                    text="💵 Валюта" if lang == "ru" else "💵 Valyuta",
+                    callback_data="m_currency"
+                )
+            ],
         ]
     )
+
 
 # ================= HELPERS =================
 def get_user(uid):
