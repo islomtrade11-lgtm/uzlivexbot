@@ -2,16 +2,25 @@ import os
 import asyncio
 import sqlite3
 import requests
-from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
-from aiogram.filters import CommandStart
+from aiohttp import web
 
-# ================= ENV =================
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import CommandStart
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+
+# ========== ENV ==========
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
+BASE_URL = os.getenv("RENDER_EXTERNAL_URL")  # Render сам задаёт
+WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
+WEBHOOK_URL = f"{BASE_URL}{WEBHOOK_PATH}"
 
-# ================= DB =================
-conn = sqlite3.connect("users.db")
+# ========== BOT ==========
+bot = Bot(BOT_TOKEN)
+dp = Dispatcher()
+
+# ========== DB ==========
+conn = sqlite3.connect("users.db", check_same_thread=False)
 cur = conn.cursor()
 
 cur.execute("""
@@ -24,51 +33,45 @@ CREATE TABLE IF NOT EXISTS users (
 """)
 conn.commit()
 
-# ================= TEXTS =================
+# ========== TEXT ==========
 TEXTS = {
     "ru": {
-        "start": "🇺🇿 UzLife Bot\n\nПогода, экология и жизнь в Узбекистане.\n\n👉 Напиши город",
-        "city_saved": "🏙 Город сохранён: {city}",
+        "start": "🇺🇿 UzLife Bot\n\nПогода и экология Узбекистана.\n\n👉 Напиши город",
         "need_city": "❗ Сначала напиши город",
-        "weather_fail": "❌ Не удалось получить погоду",
-        "aqi_fail": "❌ Не удалось получить AQI",
-        "alerts_on": "🔔 Уведомления ВКЛЮЧЕНЫ ✅",
-        "alerts_off": "🔕 Уведомления ВЫКЛЮЧЕНЫ ❌",
-        "lang_set": "🌐 Язык переключён: Русский",
+        "city_saved": "🏙 Город сохранён: {city}",
+        "alerts_on": "🔔 Уведомления включены",
+        "alerts_off": "🔕 Уведомления выключены",
     },
     "uz": {
         "start": "🇺🇿 UzLife Bot\n\nO‘zbekiston ob-havosi va ekologiyasi.\n\n👉 Shahar nomini yozing",
-        "city_saved": "🏙 Shahar saqlandi: {city}",
         "need_city": "❗ Avval shaharni kiriting",
-        "weather_fail": "❌ Ob-havo olinmadi",
-        "aqi_fail": "❌ Havo sifati olinmadi",
-        "alerts_on": "🔔 Bildirishnomalar YOQILDI ✅",
-        "alerts_off": "🔕 Bildirishnomalar O‘CHIRILDI ❌",
-        "lang_set": "🌐 Til o‘zgartirildi: O‘zbekcha",
+        "city_saved": "🏙 Shahar saqlandi: {city}",
+        "alerts_on": "🔔 Bildirishnomalar yoqildi",
+        "alerts_off": "🔕 Bildirishnomalar o‘chirildi",
     }
 }
 
-# ================= KEYBOARD =================
-def get_keyboard(lang):
+# ========== KEYBOARD ==========
+def kb(lang):
     if lang == "uz":
-        return ReplyKeyboardMarkup(
+        return types.ReplyKeyboardMarkup(
             keyboard=[
-                [KeyboardButton(text="🌦 Ob-havo"), KeyboardButton(text="🌫 Havo (AQI)")],
-                [KeyboardButton(text="💵 Valyuta")],
-                [KeyboardButton(text="🔔 Bildirishnoma"), KeyboardButton(text="🌐 Til")],
+                [types.KeyboardButton(text="🌦 Ob-havo"), types.KeyboardButton(text="🌫 Havo")],
+                [types.KeyboardButton(text="💵 Valyuta")],
+                [types.KeyboardButton(text="🔔 Bildirishnoma"), types.KeyboardButton(text="🌐 Til")]
             ],
             resize_keyboard=True
         )
-    return ReplyKeyboardMarkup(
+    return types.ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="🌦 Погода"), KeyboardButton(text="🌫 Воздух (AQI)")],
-            [KeyboardButton(text="💵 Курсы валют")],
-            [KeyboardButton(text="🔔 Уведомления"), KeyboardButton(text="🌐 Язык")],
+            [types.KeyboardButton(text="🌦 Погода"), types.KeyboardButton(text="🌫 Воздух")],
+            [types.KeyboardButton(text="💵 Валюта")],
+            [types.KeyboardButton(text="🔔 Уведомления"), types.KeyboardButton(text="🌐 Язык")]
         ],
         resize_keyboard=True
     )
 
-# ================= HELPERS =================
+# ========== HELPERS ==========
 def get_user(uid):
     cur.execute("SELECT city, lang, alerts FROM users WHERE user_id=?", (uid,))
     return cur.fetchone()
@@ -83,8 +86,8 @@ def set_user(uid, city=None, lang=None, alerts=None):
         cur.execute("UPDATE users SET alerts=? WHERE user_id=?", (alerts, uid))
     conn.commit()
 
-# ================= API =================
-def get_weather(city):
+# ========== API ==========
+def weather(city):
     r = requests.get(
         "https://api.openweathermap.org/data/2.5/weather",
         params={
@@ -98,115 +101,69 @@ def get_weather(city):
     if r.status_code != 200:
         return None
     d = r.json()
-    return {
-        "temp": d["main"]["temp"],
-        "feels": d["main"]["feels_like"],
-        "desc": d["weather"][0]["description"],
-        "lat": d["coord"]["lat"],
-        "lon": d["coord"]["lon"],
-    }
+    return d["main"]["temp"], d["main"]["feels_like"]
 
-def get_aqi(lat, lon):
-    r = requests.get(
-        "https://api.openweathermap.org/data/2.5/air_pollution",
-        params={"lat": lat, "lon": lon, "appid": OPENWEATHER_API_KEY},
-        timeout=10
-    )
-    if r.status_code != 200:
-        return None
-    a = r.json()["list"][0]
-    return a["main"]["aqi"]
-
-def get_currency():
+def currency():
     r = requests.get("https://api.exchangerate.host/latest?base=USD&symbols=UZS", timeout=10)
     if r.status_code != 200:
         return None
     return round(r.json()["rates"]["UZS"], 2)
 
-# ================= HANDLERS =================
-async def start(message: Message):
-    uid = message.from_user.id
-    set_user(uid)
-    city, lang, alerts = get_user(uid)
-    await message.answer(TEXTS[lang]["start"], reply_markup=get_keyboard(lang))
+# ========== HANDLERS ==========
+@dp.message(CommandStart())
+async def start(m: types.Message):
+    set_user(m.from_user.id)
+    _, lang, _ = get_user(m.from_user.id)
+    await m.answer(TEXTS[lang]["start"], reply_markup=kb(lang))
 
-async def save_city(message: Message):
-    uid = message.from_user.id
-    city, lang, alerts = get_user(uid)
-    set_user(uid, city=message.text)
-    await message.answer(TEXTS[lang]["city_saved"].format(city=message.text))
-
-async def weather(message: Message):
-    uid = message.from_user.id
-    city, lang, alerts = get_user(uid)
+@dp.message(F.text.in_(["🌦 Погода", "🌦 Ob-havo"]))
+async def h_weather(m: types.Message):
+    city, lang, _ = get_user(m.from_user.id)
     if not city:
-        await message.answer(TEXTS[lang]["need_city"])
+        await m.answer(TEXTS[lang]["need_city"])
         return
-    w = get_weather(city)
-    if not w:
-        await message.answer(TEXTS[lang]["weather_fail"])
-        return
-    await message.answer(
-        f"🌦 {city}\n🌡 {w['temp']}°C\n🤒 {w['feels']}°C\n☁️ {w['desc']}"
-    )
+    t, f = weather(city)
+    await m.answer(f"🌦 {city}\n🌡 {t}°C\n🤒 {f}°C")
 
-async def aqi(message: Message):
-    uid = message.from_user.id
-    city, lang, alerts = get_user(uid)
-    if not city:
-        await message.answer(TEXTS[lang]["need_city"])
-        return
-    w = get_weather(city)
-    a = get_aqi(w["lat"], w["lon"]) if w else None
-    if not a:
-        await message.answer(TEXTS[lang]["aqi_fail"])
-        return
-    await message.answer(f"🌫 AQI: {a}")
+@dp.message(F.text.in_(["💵 Валюта", "💵 Valyuta"]))
+async def h_currency(m: types.Message):
+    r = currency()
+    if r:
+        await m.answer(f"💵 1 USD = {r} UZS")
 
-async def currency(message: Message):
-    rate = get_currency()
-    if rate:
-        await message.answer(f"💵 1 USD = {rate} UZS")
+@dp.message(F.text.in_(["🔔 Уведомления", "🔔 Bildirishnoma"]))
+async def h_alerts(m: types.Message):
+    city, lang, a = get_user(m.from_user.id)
+    new = 0 if a else 1
+    set_user(m.from_user.id, alerts=new)
+    await m.answer(TEXTS[lang]["alerts_on"] if new else TEXTS[lang]["alerts_off"])
 
-async def toggle_alerts(message: Message):
-    uid = message.from_user.id
-    city, lang, alerts = get_user(uid)
-    new = 0 if alerts else 1
-    set_user(uid, alerts=new)
-    await message.answer(TEXTS[lang]["alerts_on"] if new else TEXTS[lang]["alerts_off"])
+@dp.message(F.text.in_(["🌐 Язык", "🌐 Til"]))
+async def h_lang(m: types.Message):
+    city, lang, a = get_user(m.from_user.id)
+    new = "uz" if lang == "ru" else "ru"
+    set_user(m.from_user.id, lang=new)
+    await m.answer("OK", reply_markup=kb(new))
 
-async def toggle_lang(message: Message):
-    uid = message.from_user.id
-    city, lang, alerts = get_user(uid)
-    new_lang = "uz" if lang == "ru" else "ru"
-    set_user(uid, lang=new_lang)
-    await message.answer(TEXTS[new_lang]["lang_set"], reply_markup=get_keyboard(new_lang))
+@dp.message(F.text.regexp(r"^[A-Za-zА-Яа-я\s\-]+$"))
+async def h_city(m: types.Message):
+    _, lang, _ = get_user(m.from_user.id)
+    set_user(m.from_user.id, city=m.text)
+    await m.answer(TEXTS[lang]["city_saved"].format(city=m.text))
 
-# ================= ALERT LOOP =================
-async def alert_loop(bot: Bot):
-    while True:
-        cur.execute("SELECT user_id, city, lang FROM users WHERE alerts=1 AND city IS NOT NULL")
-        for uid, city, lang in cur.fetchall():
-            w = get_weather(city)
-            if w and w["temp"] >= 38:
-                await bot.send_message(uid, f"🔥 {city}: {w['temp']}°C")
-        await asyncio.sleep(3600)
+# ========== WEB ==========
+async def on_startup(app):
+    await bot.set_webhook(WEBHOOK_URL)
 
-# ================= MAIN =================
-async def main():
-    bot = Bot(BOT_TOKEN)
-    dp = Dispatcher()
+async def on_shutdown(app):
+    await bot.delete_webhook()
 
-    dp.message.register(start, CommandStart())
-    dp.message.register(weather, F.text.in_(["🌦 Погода", "🌦 Ob-havo"]))
-    dp.message.register(aqi, F.text.in_(["🌫 Воздух (AQI)", "🌫 Havo (AQI)"]))
-    dp.message.register(currency, F.text.in_(["💵 Курсы валют", "💵 Valyuta"]))
-    dp.message.register(toggle_alerts, F.text.in_(["🔔 Уведомления", "🔔 Bildirishnoma"]))
-    dp.message.register(toggle_lang, F.text.in_(["🌐 Язык", "🌐 Til"]))
-    dp.message.register(save_city, F.text.regexp(r"^[A-Za-zА-Яа-я\s\-]+$"))
+app = web.Application()
+SimpleRequestHandler(dp, bot).register(app, path=WEBHOOK_PATH)
+setup_application(app, dp, bot=bot)
 
-    asyncio.create_task(alert_loop(bot))
-    await dp.start_polling(bot)
+app.on_startup.append(on_startup)
+app.on_shutdown.append(on_shutdown)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    web.run_app(app, port=int(os.getenv("PORT", 10000)))
