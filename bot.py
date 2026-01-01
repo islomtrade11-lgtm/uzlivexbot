@@ -35,26 +35,24 @@ conn.commit()
 # ========= TEXT =========
 TEXT = {
     "ru": {
-        "start": (
-            "🇺🇿 *UzLife Bot*\n\n"
-            "Погода, экология и быт Узбекистана.\n\n"
-            "✍️ Напиши *город*, затем нажми «Меню»"
-        ),
+        "start": "🇺🇿 *UzLife Bot*\n\nНапиши *город*, затем нажми «Меню»",
         "city_saved": "🏙 Город сохранён: *{city}*",
         "need_city": "❗ Сначала напиши город",
-        "alerts_on": "🔔 Уведомления *включены*",
-        "alerts_off": "🔕 Уведомления *выключены*",
+        "weather_title": "🌦 *Погода в {city}*",
+        "aqi_title": "🌫 *Качество воздуха в {city}*",
+        "currency": "💵 *Курс валют*\n\n1 USD = *{rate} UZS*",
+        "alerts_on": "🔔 Уведомления включены",
+        "alerts_off": "🔕 Уведомления выключены",
     },
     "uz": {
-        "start": (
-            "🇺🇿 *UzLife Bot*\n\n"
-            "O‘zbekiston bo‘yicha ma’lumotlar.\n\n"
-            "✍️ *Shahar* nomini yozing, so‘ng «Menyu» ni bosing"
-        ),
+        "start": "🇺🇿 *UzLife Bot*\n\n*Shahar* nomini yozing, so‘ng «Menyu» ni bosing",
         "city_saved": "🏙 Shahar saqlandi: *{city}*",
         "need_city": "❗ Avval shaharni kiriting",
-        "alerts_on": "🔔 Bildirishnomalar *yoqildi*",
-        "alerts_off": "🔕 Bildirishnomalar *o‘chirildi*",
+        "weather_title": "🌦 *{city} dagi ob-havo*",
+        "aqi_title": "🌫 *{city} dagi havo sifati*",
+        "currency": "💵 *Valyuta kursi*\n\n1 USD = *{rate} UZS*",
+        "alerts_on": "🔔 Bildirishnomalar yoqildi",
+        "alerts_off": "🔕 Bildirishnomalar o‘chirildi",
     }
 }
 
@@ -76,15 +74,15 @@ def menu_inline(lang):
         inline_keyboard=[
             [types.InlineKeyboardButton(
                 text="🌦 Погода" if lang == "ru" else "🌦 Ob-havo",
-                callback_data="weather"
+                callback_data="menu_weather"
             )],
             [types.InlineKeyboardButton(
                 text="🌫 Воздух (AQI)" if lang == "ru" else "🌫 Havo (AQI)",
-                callback_data="aqi"
+                callback_data="menu_aqi"
             )],
             [types.InlineKeyboardButton(
                 text="💵 Валюта" if lang == "ru" else "💵 Valyuta",
-                callback_data="currency"
+                callback_data="menu_currency"
             )],
         ]
     )
@@ -105,14 +103,14 @@ def set_user(uid, city=None, lang=None, alerts=None):
     conn.commit()
 
 # ========= API =========
-def get_weather(city):
+def get_weather(city, lang):
     r = requests.get(
         "https://api.openweathermap.org/data/2.5/weather",
         params={
             "q": f"{city},UZ",
             "appid": OPENWEATHER_API_KEY,
             "units": "metric",
-            "lang": "ru"
+            "lang": "ru" if lang == "ru" else "uz"
         },
         timeout=10
     )
@@ -133,11 +131,7 @@ def get_weather(city):
 def get_aqi(lat, lon):
     r = requests.get(
         "https://api.openweathermap.org/data/2.5/air_pollution",
-        params={
-            "lat": lat,
-            "lon": lon,
-            "appid": OPENWEATHER_API_KEY
-        },
+        params={"lat": lat, "lon": lon, "appid": OPENWEATHER_API_KEY},
         timeout=10
     )
     return r.json()["list"][0]["main"]["aqi"]
@@ -149,16 +143,12 @@ def get_currency():
     )
     return round(r.json()["rates"]["UZS"], 2)
 
-# ========= MESSAGE HANDLERS =========
+# ========= HANDLERS =========
 @dp.message(CommandStart())
 async def start(m: types.Message):
     set_user(m.from_user.id)
     _, lang, _ = get_user(m.from_user.id)
-    await m.answer(
-        TEXT[lang]["start"],
-        reply_markup=reply_kb(lang),
-        parse_mode="Markdown"
-    )
+    await m.answer(TEXT[lang]["start"], reply_markup=reply_kb(lang), parse_mode="Markdown")
 
 @dp.message(F.text.in_(["📋 Меню", "📋 Menyu"]))
 async def show_menu(m: types.Message):
@@ -182,30 +172,22 @@ async def change_lang(m: types.Message):
 async def save_city(m: types.Message):
     _, lang, _ = get_user(m.from_user.id)
     set_user(m.from_user.id, city=m.text)
-    await m.answer(
-        TEXT[lang]["city_saved"].format(city=m.text),
-        parse_mode="Markdown"
-    )
+    await m.answer(TEXT[lang]["city_saved"].format(city=m.text), parse_mode="Markdown")
 
-# ========= CALLBACK FUNCTIONS =========
+# ========= CALLBACKS =========
 async def cb_weather(c: types.CallbackQuery):
     await c.answer()
     city, lang, _ = get_user(c.from_user.id)
-
     if not city:
         await c.message.answer(TEXT[lang]["need_city"])
         return
 
-    w = get_weather(city)
-    if not w:
-        await c.message.answer("❌ Ошибка получения погоды")
-        return
-
+    w = get_weather(city, lang)
     text = (
-        f"🌦 *Погода в {city}*\n\n"
-        f"🌡 {w['temp']}°C (ощущается {w['feels']}°C)\n"
-        f"💧 Влажность: {w['humidity']}%\n"
-        f"💨 Ветер: {w['wind']} м/с\n"
+        f"{TEXT[lang]['weather_title'].format(city=city)}\n\n"
+        f"🌡 {w['temp']}°C (ощ. {w['feels']}°C)\n"
+        f"💧 {w['humidity']}%\n"
+        f"💨 {w['wind']} м/с\n"
         f"☁️ {w['desc']}"
     )
     await c.message.answer(text, parse_mode="Markdown")
@@ -213,40 +195,23 @@ async def cb_weather(c: types.CallbackQuery):
 async def cb_aqi(c: types.CallbackQuery):
     await c.answer()
     city, lang, _ = get_user(c.from_user.id)
-
-    if not city:
-        await c.message.answer(TEXT[lang]["need_city"])
-        return
-
-    w = get_weather(city)
+    w = get_weather(city, lang)
     aqi = get_aqi(w["lat"], w["lon"])
-
-    levels = {
-        1: "🟢 Хорошо",
-        2: "🟡 Умеренно",
-        3: "🟠 Плохо",
-        4: "🔴 Очень плохо",
-        5: "🟣 Опасно",
-    }
-
     await c.message.answer(
-        f"🌫 *Качество воздуха в {city}*\n\n"
-        f"AQI: *{levels.get(aqi, aqi)}*",
+        f"{TEXT[lang]['aqi_title'].format(city=city)}\n\nAQI: *{aqi}*",
         parse_mode="Markdown"
     )
 
 async def cb_currency(c: types.CallbackQuery):
     await c.answer()
     rate = get_currency()
-    await c.message.answer(
-        f"💵 *Курс валют*\n\n1 USD = *{rate} UZS*",
-        parse_mode="Markdown"
-    )
+    city, lang, _ = get_user(c.from_user.id)
+    await c.message.answer(TEXT[lang]["currency"].format(rate=rate), parse_mode="Markdown")
 
-# ========= REGISTER CALLBACKS (КЛЮЧЕВОЕ) =========
-dp.callback_query.register(cb_weather, F.data == "weather")
-dp.callback_query.register(cb_aqi, F.data == "aqi")
-dp.callback_query.register(cb_currency, F.data == "currency")
+# ========= REGISTER CALLBACKS =========
+dp.callback_query.register(cb_weather, F.data == "menu_weather")
+dp.callback_query.register(cb_aqi, F.data == "menu_aqi")
+dp.callback_query.register(cb_currency, F.data == "menu_currency")
 
 # ========= WEBHOOK =========
 async def on_startup(app):
